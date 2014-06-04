@@ -1,3 +1,4 @@
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 import urllib
@@ -24,9 +25,13 @@ class HttpRequest:
         if method == "GET":
             req = requests.get(self.url, headers=self.headers)
         elif method == "POST":
-            req = requests.post(self.url, data=json.dumps(self.body), headers=self.headers)
+            req = requests.post(self.url, data=json.dumps(self.body),
+                                headers=self.headers)
         elif method == "DELETE":
             req = requests.delete(self.url, headers=self.headers)
+        elif method == "PUT":
+            req = requests.put(self.url, data=json.dumps(self.body),
+                               headers=self.headers)
         else:
             raise Exception("call not supported method %s" % method)
 
@@ -46,7 +51,7 @@ class HeatService(BaseService):
     def set_keystone(self, ks):
         self.keystone = ks
     
-    def stack_create(self, s_name, tempalte, env={}, param={}):
+    def stack_create(self, s_name, template, env={}, param={}):
         token = self.keystone.generate_token_id()
         header = self._generate_common_headers(token)
         url = self._generate_base_url()
@@ -103,6 +108,72 @@ class HeatService(BaseService):
         resp = request.call(method='DELETE')
 
         return resp
+
+    def stack_find(self, stack_name):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url()
+
+        url = '/'.join([url, stack_name])
+
+        request = HttpRequest(url, headers=header)
+        resp = request.call()
+
+        return resp
+
+
+    def stack_update(self, s_name, template, env={}, param={}):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url()
+
+        stack_id = self._fetch_stack_id(s_name)
+
+        url = '/'.join([url, s_name, stack_id])
+
+        body = {
+            "template": template,
+            }
+
+        request = HttpRequest(url, body, header)
+        resp = request.call("PUT")
+
+        return resp
+
+    
+    def stack_adopt(self, stack_name, template, resource_data):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url()
+
+        body = {
+            "stack_name": stack_name,
+            "template": template,
+            "adopt_stack_data": resource_data,
+            }
+        
+        request = HttpRequest(url, body, header)
+        resp = json.loads(request.call("POST"))
+
+        return resp
+
+    def stack_abandon(self, stack_name, preview=False):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url()
+
+        stack_id = self._fetch_stack_id(stack_name)
+
+        url = '/'.join([url, stack_name, stack_id, 'abandon'])
+
+        request = HttpRequest(url, headers=header)
+        if preview is True:
+            resp = request.call()
+        else:
+            resp = request.call("DELETE")
+
+        return resp
+
 
     def _fetch_stack_id(self, stack_name):
         s_list = self.stack_list()
