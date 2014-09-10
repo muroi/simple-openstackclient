@@ -6,13 +6,17 @@ import urllib2
 import json
 import requests
 
-debug = False
+debug = True
 
 class BaseService:
     def __init__(self, tenant, name, passwd):
         self.name = name
         self.passwd = passwd
         self.tenant = tenant
+
+    def set_keystone(self, ks):
+        self.keystone = ks
+
 
 class HttpRequest:
     def __init__(self, url, body={}, headers={}):
@@ -49,13 +53,163 @@ class HttpRequest:
 
         return res
 
-    
-class HeatService(BaseService):
+
+class NovaService(BaseService):
     def __init__(self, tenant, name, passwd):
         BaseService.__init__(self, tenant, name, passwd)
 
-    def set_keystone(self, ks):
-        self.keystone = ks
+    def _generate_base_url(self, url_type='publicURL'):
+        '''
+        return nova endpoint url
+        '''
+        heat_endpoint = self.keystone.fetch_endpoint(endpoint_type="compute")
+        url = heat_endpoint[0]['endpoints'][0][url_type]
+        
+        return url
+
+    def _generate_common_headers(self, token):
+        header = {
+            "Content-type": "application/json",
+            'X-Auth-Token': token
+            }
+        
+        return header
+
+    def create_server_with_volume(self, name, flavor, block_device, image=None):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/servers'
+
+        body = {
+            'server': {
+                'name'                 : name,
+                'flavorRef'            : flavor,
+                'block_device_mapping' : block_device
+                }
+            }
+
+        if image is not None:
+            body['server']['imageRef'] = image
+
+        request = HttpRequest(url, body, header)
+        resp = json.loads(request.call("POST").content)
+
+        return resp
+            
+    def detach_volume(self, server_id, volume_id):
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/servers' + server_id +\
+            'os-volume_attachments' + volume_id
+            
+        request = HttpRequest(url, headers=header)
+        resp = request.call(method='DELETE').content
+
+        return resp
+
+
+class CinderService(BaseService):
+    def __init__(self, tenant, name, passwd):
+        BaseService.__init__(self, tenant, name, passwd)
+
+    def _generate_base_url(self, url_type='publicURL'):
+        '''
+        return cinder endpoint url
+        '''
+        heat_endpoint = self.keystone.fetch_endpoint(endpoint_type="volumev2")
+        url = heat_endpoint[0]['endpoints'][0][url_type]
+        
+        return url
+
+    def _generate_common_headers(self, token):
+        header = {
+            "Content-type": "application/json",
+            'X-Auth-Token': token
+            }
+        
+        return header
+
+    def create_volume(self, size, display_name=None, bootable=False, image_ref=None):
+        '''
+        create a new volume
+        '''
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/volumes'
+
+        body = {
+            'volume': {
+                'size': size,
+                }
+            }
+
+        if display_name is not None:
+            body['volume']['display_name'] = display_name
+
+        if bootable is True:
+            body['volume']['bootable'] = True
+
+        if image_ref is not None:
+            body['volume']['imageRef'] = image_ref
+
+        request = HttpRequest(url, body, header)
+        resp = json.loads(request.call("POST").content)
+
+        return resp
+
+    def show_volume(self, volume_id):
+        '''show a volume detail'''
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/volumes/' + volume_id
+
+        request = HttpRequest(url, headers=header)
+        resp = request.call(method='GET').content
+
+        return resp
+        
+    def delete_volume(self, volume_id):
+        '''
+        delete a volume
+        '''
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/volumes/' + volume_id
+
+        request = HttpRequest(url, headers=header)
+        resp = request.call(method='DELETE').content
+
+        return resp
+
+    def upload_volume(self, volume_id, container_format,
+                      disk_format, image_name, force=False):
+        '''
+        upload a volume to a image
+        '''
+        token = self.keystone.generate_token_id()
+        header = self._generate_common_headers(token)
+        url = self._generate_base_url() + '/volumes/' + volume_id + '/action'
+
+        body = {
+            'os-volume_upload_image': {
+                'container_format': container_format,
+                'disk_format': disk_format,
+                'image_name': image_name,
+                }
+            }
+
+        if force is True:
+            body['os-volume_upload_image']['force'] = True
+
+        request = HttpRequest(url, body, header)
+        resp = json.loads(request.call("POST").content)
+
+        return resp
+        
+
+class HeatService(BaseService):
+    def __init__(self, tenant, name, passwd):
+        BaseService.__init__(self, tenant, name, passwd)
     
     def stack_create(self, s_name, template, env={}, param={}):
         token = self.keystone.generate_token_id()
@@ -196,7 +350,6 @@ class HeatService(BaseService):
         
         return url
 
-
     def _generate_common_headers(self, token=None):
         header = {
             "X-Auth-User": self.name,
@@ -254,7 +407,7 @@ class KeystoneService_V3(BaseService):
         header["X-Subject-Token"] = token
 
         request = HttpRequest(url, headers=header)
-        resp = request.call("DELETE")
+        resp = json.loads(request.call("DELETE").content)
 
         return resp
         
@@ -278,7 +431,7 @@ class KeystoneService_V3(BaseService):
             }
 
         request = HttpRequest(url, data, header)
-        resp = request.call('POST').content
+        resp = json.loads(request.call('POST').content)
 
         return resp
 
@@ -290,7 +443,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-Token"] = self.generate_token_id()
 
         request = HttpRequest(url, data, header)
-        resp = request.call('PATCH').content
+        resp = json.loads(request.call('PATCH').content)
 
         return resp
 
@@ -302,7 +455,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -314,7 +467,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('DELETE').content
+        resp = json.loads(request.call('DELETE').content)
 
         return resp
 
@@ -334,7 +487,7 @@ class KeystoneService_V3(BaseService):
             }
 
         request = HttpRequest(url, data, header)
-        resp = request.call('POST').content
+        resp = json.loads(request.call('POST').content)
 
         return resp
 
@@ -346,7 +499,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -358,7 +511,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('DELETE').content
+        resp = json.loads(request.call('DELETE').content)
 
         return resp
 
@@ -381,7 +534,7 @@ class KeystoneService_V3(BaseService):
             data['user']['domain_id'] = domain
 
         request = HttpRequest(url, data, header)
-        resp = request.call('POST').content
+        resp = json.loads(request.call('POST').content)
 
         return resp
 
@@ -393,7 +546,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -405,7 +558,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -417,7 +570,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -429,7 +582,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('DELETE').content
+        resp = json.loads(request.call('DELETE').content)
 
         return resp
 
@@ -448,7 +601,7 @@ class KeystoneService_V3(BaseService):
             }
 
         request = HttpRequest(url, data, header)
-        resp = request.call('POST').content
+        resp = json.loads(request.call('POST').content)
 
         return resp
 
@@ -461,7 +614,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('PUT').content
+        resp = json.loads(request.call('PUT').content)
 
         return resp
     
@@ -473,7 +626,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -485,7 +638,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -497,7 +650,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('DELETE').content
+        resp = json.loads(request.call('DELETE').content)
 
         return resp
 
@@ -511,7 +664,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('PUT').content
+        resp = json.loads(request.call('PUT').content)
 
         return resp
 
@@ -525,7 +678,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -539,7 +692,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('PUT').content
+        resp = json.loads(request.call('PUT').content)
 
         return resp
 
@@ -553,7 +706,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
 
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -564,7 +717,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -575,7 +728,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
         
@@ -591,7 +744,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('GET').content
+        resp = json.loads(request.call('GET').content)
 
         return resp
 
@@ -607,7 +760,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('PUT').content
+        resp = json.loads(request.call('PUT').content)
 
         return resp
 
@@ -623,7 +776,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('HEAD').content
+        resp = json.loads(request.call('HEAD').content)
 
         return resp
 
@@ -639,7 +792,7 @@ class KeystoneService_V3(BaseService):
         header["X-Auth-token"] = self.generate_token_id()
         
         request = HttpRequest(url, headers=header)
-        resp = request.call('DELETE').content
+        resp = json.loads(request.call('DELETE').content)
 
         return resp
 
@@ -699,6 +852,6 @@ class KeystoneService(BaseService):
             }
 
         request = HttpRequest(url, data, header)
-        resp = request.call("POST").content
+        resp = json.loads(request.call("POST").content)
 
         return resp
